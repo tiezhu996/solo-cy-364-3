@@ -38,15 +38,16 @@ type InventoryStats struct {
 }
 
 type storeInventoryService struct {
-	invRepo repository.StoreInventoryRepository
-	skuRepo repository.SKURepository
-	db      *gorm.DB
-	logger  *slog.Logger
+	invRepo  repository.StoreInventoryRepository
+	skuRepo  repository.SKURepository
+	alertSvc StockAlertService
+	db       *gorm.DB
+	logger   *slog.Logger
 }
 
 // NewStoreInventoryService 构造门店库存服务。
-func NewStoreInventoryService(invRepo repository.StoreInventoryRepository, skuRepo repository.SKURepository, db *gorm.DB, logger *slog.Logger) StoreInventoryService {
-	return &storeInventoryService{invRepo: invRepo, skuRepo: skuRepo, db: db, logger: logger}
+func NewStoreInventoryService(invRepo repository.StoreInventoryRepository, skuRepo repository.SKURepository, alertSvc StockAlertService, db *gorm.DB, logger *slog.Logger) StoreInventoryService {
+	return &storeInventoryService{invRepo: invRepo, skuRepo: skuRepo, alertSvc: alertSvc, db: db, logger: logger}
 }
 
 func (s *storeInventoryService) Ensure(storeID, skuID uint, quantity int) (*model.StoreInventory, error) {
@@ -77,9 +78,20 @@ func (s *storeInventoryService) SetSafetyStock(id uint, safetyStock int) (*model
 	if safetyStock < 0 {
 		return nil, fmt.Errorf("set safety stock inventory[id=%d]: %w", id, util.ErrValidation)
 	}
-	inv.SafetyStock = safetyStock
-	if err := s.invRepo.Update(inv); err != nil {
-		return nil, fmt.Errorf("set safety stock inventory[id=%d]: %w", id, err)
+	// 保存安全库存与刷新低库存预警必须同一事务：任一失败整体回滚，
+	// 杜绝库存已改、通知未写（或反之）的半保存状态。
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		inv.SafetyStock = safetyStock
+		if err := s.invRepo.UpdateTx(tx, inv); err != nil {
+			return fmt.Errorf("set safety stock inventory[id=%d]: %w", id, err)
+		}
+		if err := s.alertSvc.TriggerAfterChangeTx(tx, inv.StoreID, inv.SKUID); err != nil {
+			return fmt.Errorf("set safety stock inventory[id=%d] trigger alert: %w", id, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	s.logger.Info(constants.LogInventorySafetySet, "inventory_id", id, "safety_stock", safetyStock)
 	return inv, nil
@@ -141,7 +153,14 @@ func (s *storeInventoryService) AdjustQuantityTx(tx *gorm.DB, storeID, skuID uin
 	if inv.Quantity+delta < 0 {
 		return fmt.Errorf("adjust quantity store[%d] sku[%d]: %w", storeID, skuID, util.ErrStockNotEnough)
 	}
-	return s.invRepo.AdjustQuantityTx(tx, storeID, skuID, delta)
+	if err := s.invRepo.AdjustQuantityTx(tx, storeID, skuID, delta); err != nil {
+		return fmt.Errorf("adjust quantity store[%d] sku[%d]: %w", storeID, skuID, err)
+	}
+	// 库存水位变化后刷新低库存预警（同事务，未读去重）。
+	if err := s.alertSvc.TriggerAfterChangeTx(tx, storeID, skuID); err != nil {
+		return fmt.Errorf("adjust quantity store[%d] sku[%d] trigger alert: %w", storeID, skuID, err)
+	}
+	return nil
 }
 
 func (s *storeInventoryService) CheckSufficient(storeID, skuID uint, qty int) error {

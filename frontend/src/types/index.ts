@@ -1,6 +1,7 @@
 import type { UserRoleValue } from '@/constants/user'
 import type { TransferStatusValue } from '@/constants/transfer'
 import type { StockRecordTypeValue } from '@/constants/stockRecord'
+import type { AlertViewValue } from '@/constants/stockAlert'
 
 export interface User {
   id: number
@@ -83,6 +84,27 @@ export interface Stocktake {
   difference: number
   remark: string
   created_at: string
+}
+
+export interface StockAlert {
+  id: number
+  store_id: number
+  store?: Store
+  sku_id: number
+  sku?: SKU
+  quantity: number
+  safety_stock: number
+  shortage_qty: number
+  trigger_count: number
+  is_read: boolean
+  triggered_at: string
+  read_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AlertPageResult extends PageResult<StockAlert> {
+  view: AlertViewValue
 }
 
 export interface InventoryStats {

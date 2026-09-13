@@ -64,6 +64,9 @@ func (r *Router) connectDB() error {
 	for i := 0; i < 30; i++ {
 		db, err = gorm.Open(postgres.Open(r.cfg.DSN()), &gorm.Config{
 			Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+			// init.sql 未创建物理外键，Preload 仅依赖结构体关联标签；迁移期禁用外键约束，
+			// 避免空库 AutoMigrate 因建表顺序报 relation does not exist。
+			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 		if err == nil {
 			sqlDB, dbErr := db.DB()
@@ -85,8 +88,16 @@ func (r *Router) migrate() error {
 	if err := r.db.AutoMigrate(
 		&model.User{}, &model.Store{}, &model.SKU{}, &model.StoreInventory{},
 		&model.TransferOrder{}, &model.StockRecord{}, &model.Stocktake{},
+		&model.StockAlert{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
+	}
+	// 同一门店 + SKU 只保留一条未读通知（已读记录可保留多条，用于历史）。
+	if err := r.db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS uniq_alert_store_sku_unread
+		ON stock_alerts (store_id, sku_id) WHERE is_read = false
+	`).Error; err != nil {
+		return fmt.Errorf("create stock alert partial unique index: %w", err)
 	}
 	r.logger.Info("database migrated")
 	return nil
@@ -116,11 +127,14 @@ func (r *Router) registerV1(v1 *gin.RouterGroup) {
 	invRepo := repository.NewStoreInventoryRepository(r.db)
 	transferRepo := repository.NewTransferOrderRepository(r.db)
 	recordRepo := repository.NewStockRecordRepository(r.db)
+	alertRepo := repository.NewStockAlertRepository(r.db)
 
 	userSvc := service.NewUserService(userRepo, r.logger, r.cfg.JWTSecret, r.cfg.TokenTTLHours)
 	storeSvc := service.NewStoreService(storeRepo, r.logger)
 	skuSvc := service.NewSKUService(skuRepo, r.logger)
-	invSvc := service.NewStoreInventoryService(invRepo, skuRepo, r.db, r.logger)
+	// 预警服务先于库存服务构造：库存每次水位变化都要刷新预警通知。
+	alertSvc := service.NewStockAlertService(alertRepo, invRepo, r.logger)
+	invSvc := service.NewStoreInventoryService(invRepo, skuRepo, alertSvc, r.db, r.logger)
 	recordSvc := service.NewStockRecordService(recordRepo, invRepo, storeRepo, skuRepo, invSvc, r.db, r.logger)
 	transferSvc := service.NewTransferOrderService(transferRepo, invSvc, recordSvc, r.db, r.logger)
 
@@ -130,6 +144,7 @@ func (r *Router) registerV1(v1 *gin.RouterGroup) {
 	invHandler := handler.NewStoreInventoryHandler(invSvc)
 	transferHandler := handler.NewTransferOrderHandler(transferSvc)
 	recordHandler := handler.NewStockRecordHandler(recordSvc)
+	alertHandler := handler.NewStockAlertHandler(alertSvc)
 
 	auth := middleware.AuthRequired(r.cfg)
 	authLimiter := middleware.RateLimitStrict(r.cfg)
@@ -143,4 +158,5 @@ func (r *Router) registerV1(v1 *gin.RouterGroup) {
 	registerInventoryRoutes(v1, invHandler, auth, managerRoles)
 	registerTransferRoutes(v1, transferHandler, auth, managerRoles, authLimiter)
 	registerStockRecordRoutes(v1, recordHandler, auth, managerRoles)
+	registerStockAlertRoutes(v1, alertHandler, auth)
 }

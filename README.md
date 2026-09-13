@@ -29,6 +29,7 @@ docker compose up -d --build
 - 调拨申请 → 审批确认 → 发货 → 收货全流程状态机
 - 出入库明细（采购/调拨/销售/损耗）、周期盘点与盘盈盘亏计算
 - 滞销商品分析与智能补货建议报表
+- **库存预警通知中心**：库存低于安全线自动生成未读通知（记录门店、商品、当前库存、安全库存、缺口、触发时间）；同一门店 + 商品只保留最新一条未读；提供未读/全部两个视图，支持单条或一键全部已读；总部看全部门店、店长只看本店
 - JWT 认证 + RBAC 角色权限（总部/店长/管理员）+ 接口限流
 
 ## 技术栈
@@ -61,7 +62,7 @@ cy-364/
 │   ├── cmd/server/main.go
 │   └── internal/
 │       ├── config/       # 配置解析
-│       ├── model/        # 按实体分文件（user/store/sku/store_inventory/transfer_order/stock_record/stocktake）
+│       ├── model/        # 按实体分文件（user/store/sku/store_inventory/transfer_order/stock_record/stocktake/stock_alert）
 │       ├── repository/   # 数据访问层
 │       ├── service/      # 业务逻辑层
 │       ├── handler/      # HTTP 接口层
@@ -72,14 +73,14 @@ cy-364/
 │       └── util/         # jwt/logger/formatters/app_error/replenish_calculator
 ├── frontend/
 │   └── src/
-│       ├── api/          # user/store/sku/storeInventory/transferOrder/stockRecord
-│       ├── stores/       # authStore/userStore/inventoryStore/transferStore
-│       ├── components/common/  # InventoryStatusBadge/SkuTable/StockLevelIndicator/TransferStatusBadge/RecordTable/ReplenishSuggestionCard/RoleGuard
+│       ├── api/          # user/store/sku/storeInventory/transferOrder/stockRecord/stockAlert
+│       ├── stores/       # authStore/userStore/inventoryStore/transferStore/alertStore
+│       ├── components/common/  # InventoryStatusBadge/SkuTable/StockLevelIndicator/TransferStatusBadge/RecordTable/ReplenishSuggestionCard/StockAlertTable/RoleGuard
 │       ├── hooks/        # useAuth/useInventoryStats/useTransfers
-│       ├── pages/        # Dashboard/Skus/Inventory/Transfers/Records/Analysis/Profile/Login
+│       ├── pages/        # Dashboard/Skus/Inventory/Transfers/Records/Analysis/Notifications/Profile/Login
 │       ├── router/       # index.ts + guards.ts
 │       ├── utils/        # dateFormat/replenishCalculator/request
-│       └── constants/    # transfer/stockRecord/user/errorCodes
+│       └── constants/    # transfer/stockRecord/stockAlert/user/errorCodes
 ├── database/init.sql     # PostgreSQL 初始化脚本（表结构 + 种子数据）
 ├── docker-compose.yml
 ├── .env.example
@@ -150,6 +151,10 @@ cy-364/
 | POST | /api/v1/records/stocktakes | 创建盘点记录并调整差异 | 店长/管理员/总部 |
 | GET | /api/v1/records/stocktakes | 盘点记录分页列表 | 登录 |
 | GET | /api/v1/analysis/suggestions | 补货建议报表 | 登录 |
+| GET | /api/v1/notifications?view=unread\|all | 预警通知列表（未读/全部视图，分页） | 登录，按角色收敛门店 |
+| GET | /api/v1/notifications/unread-count | 当前用户可见未读数（角标） | 登录，按角色收敛门店 |
+| PUT | /api/v1/notifications/:id/read | 标记单条预警为已读 | 登录，店长仅限本店 |
+| PUT | /api/v1/notifications/read-all | 标记可见范围全部为已读 | 登录，店长仅限本店 |
 | GET | /healthz | 服务健康检查 | 公开 |
 | GET | /api/healthz | API 健康检查 | 公开 |
 
@@ -166,6 +171,25 @@ cy-364/
 ### UserRole（用户角色）
 - 后端：`backend/internal/constants/user.go`（定义 + Valid）、`backend/internal/model/user.go`（GORM 模型）、`backend/internal/middleware/rbac.go`（RBAC 校验）、`backend/internal/router/*.go`（路由权限）、`backend/internal/service/user_service.go`（注册默认角色）、`backend/internal/util/formatters.go`（角色文本）、`backend/internal/util/jwt.go`（JWT 声明）
 - 前端：`frontend/src/constants/user.ts`（定义 + 文案）、`frontend/src/types/index.ts`、`frontend/src/stores/authStore.ts`（角色状态）、`frontend/src/router/guards.ts`（路由守卫）、`frontend/src/components/common/RoleGuard.vue`（按钮/区域显隐）、`frontend/src/pages/Login.vue`、`frontend/src/pages/Layout.vue`（角色标签）
+
+## 库存预警通知子系统
+
+当门店某 SKU 库存低于安全线（`quantity < safety_stock`）时自动生成一条**未读**预警通知，贯穿全栈：
+
+- **记录内容**：门店、商品（含编码/名称）、当前库存、安全库存、缺口（`safety_stock - quantity`）、触发次数、触发时间。
+- **未读去重**：同一 `store_id + sku_id` 只保留**最新一条未读**通知。再次低于安全线时原地刷新缺口、库存与触发时间并更新触发时间，而不是新增；数据库用部分唯一索引 `uniq_alert_store_sku_unread ... WHERE is_read = false` 兜底并发。
+- **已读后再触发**：已读通知作为历史保留，再次跌破安全线会生成一条新的未读。
+- **回补到安全线以上不产生新通知**（已存在的未读不自动消除，由用户手动已读）。
+- **两个视图**：`未读`（默认，`view=unread`）与 `全部`（`view=all`，含已读历史），均支持分页。
+- **已读操作**：标记单条 `PUT /notifications/:id/read`；一键全部已读 `PUT /notifications/read-all`。
+- **数据权限**：总部（hq）/管理员（admin）可看**全部门店**；店长（store_manager）只能看**本店**。全部已读与单条已读同样按此范围收敛，店长标记其他门店通知返回 404。
+- **触发时机**：出入库（销售/损耗出库、采购/调拨入库）、调拨发货扣减、盘点差异、设置安全库存后，都会在同一事务内重新评估并刷新预警。
+
+页面入口：侧边栏「预警通知」与顶栏铃铛（未读数角标，30 秒轮询）。
+
+### AlertView（预警通知视图）出现位置清单
+- 后端：`backend/internal/constants/stock_alert.go`（`AlertViewUnread`/`AlertViewAll` + `NormalizeAlertView`）、`backend/internal/model/stock_alert.go`（GORM 模型）、`backend/internal/repository/stock_alert_repository.go`（`AlertScope` 未读/范围过滤）、`backend/internal/service/stock_alert_service.go`（视图与角色范围、去重、已读）、`backend/internal/handler/stock_alert_handler.go`（入参归一化）、`backend/internal/router/stock_alerts.go`（路由）、`database/init.sql`（`stock_alerts` 表 + 部分唯一索引）
+- 前端：`frontend/src/constants/stockAlert.ts`（定义 + 选项）、`frontend/src/types/index.ts`（`StockAlert`/`AlertPageResult`）、`frontend/src/api/stockAlert.ts`、`frontend/src/stores/alertStore.ts`、`frontend/src/components/common/StockAlertTable.vue`（未读/已读标签与操作）、`frontend/src/pages/Notifications.vue`（视图切换、单条/全部已读、分页）、`frontend/src/pages/Layout.vue`（未读角标与轮询）
 
 ## License
 

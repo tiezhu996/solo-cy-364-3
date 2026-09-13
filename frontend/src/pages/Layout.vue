@@ -9,6 +9,11 @@
         <el-menu-item index="/transfers"><el-icon><Switch /></el-icon><span>调拨管理</span></el-menu-item>
         <el-menu-item index="/records"><el-icon><Document /></el-icon><span>出入库与盘点</span></el-menu-item>
         <el-menu-item index="/analysis"><el-icon><DataAnalysis /></el-icon><span>滞销分析与补货</span></el-menu-item>
+        <el-menu-item index="/notifications">
+          <el-badge :value="alertStore.unreadCount" :hidden="alertStore.unreadCount === 0" :max="99" class="menu-badge">
+            <el-icon><Bell /></el-icon><span>预警通知</span>
+          </el-badge>
+        </el-menu-item>
         <el-menu-item index="/profile"><el-icon><User /></el-icon><span>个人中心</span></el-menu-item>
       </el-menu>
     </el-aside>
@@ -16,6 +21,11 @@
       <el-header class="header">
         <div class="header-title">{{ route.meta.title }}</div>
         <div class="header-user">
+          <el-badge :value="alertStore.unreadCount" :hidden="alertStore.unreadCount === 0" :max="99" class="header-bell">
+            <el-button circle @click="router.push('/notifications')" aria-label="预警通知">
+              <el-icon><Bell /></el-icon>
+            </el-button>
+          </el-badge>
           <span>{{ auth.user?.name || auth.user?.username }}</span>
           <el-tag size="small" type="info">{{ USER_ROLE_TEXT[auth.role as UserRoleValue] || auth.role }}</el-tag>
           <el-button link type="primary" @click="onLogout">退出</el-button>
@@ -29,18 +39,29 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/authStore'
+import { useAlertStore } from '@/stores/alertStore'
 import { USER_ROLE_TEXT, type UserRoleValue } from '@/constants/user'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const alertStore = useAlertStore()
+
+let pollTimer: number | undefined
 
 onMounted(() => {
   if (!auth.user) auth.fetchMe()
+  alertStore.fetchUnreadCount()
+  // 每 30 秒轮询一次未读预警角标。
+  pollTimer = window.setInterval(() => alertStore.fetchUnreadCount(), 30000)
+})
+
+onUnmounted(() => {
+  if (pollTimer) window.clearInterval(pollTimer)
 })
 
 async function onLogout() {
@@ -58,5 +79,7 @@ async function onLogout() {
 .header { display: flex; justify-content: space-between; align-items: center; background: #fff; border-bottom: 1px solid #eee; }
 .header-title { font-size: 16px; font-weight: 600; }
 .header-user { display: flex; align-items: center; gap: 10px; }
+.header-bell :deep(.el-badge__content) { z-index: 10; }
+.menu-badge { width: 100%; }
 .main { background: #f5f7fa; }
 </style>

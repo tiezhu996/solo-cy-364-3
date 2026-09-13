@@ -107,7 +107,8 @@ func (s *stockRecordService) CreateStocktake(storeID, skuID uint, stocktakeDate 
 			return fmt.Errorf("create stocktake: %w", err)
 		}
 		if difference != 0 {
-			if err := s.invRepo.AdjustQuantityTx(tx, storeID, skuID, difference); err != nil {
+			// 走库存服务调整，使盘点差异同样触发低库存预警。
+			if err := s.invSvc.AdjustQuantityTx(tx, storeID, skuID, difference); err != nil {
 				return fmt.Errorf("create stocktake adjust inventory: %w", err)
 			}
 		}

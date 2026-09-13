@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -72,6 +73,17 @@ func seedData(db *gorm.DB, logger *slog.Logger) error {
 	if err := db.Create(&records).Error; err != nil {
 		return fmt.Errorf("seed stock records: %w", err)
 	}
-	logger.Info("seed data created", "stores", len(stores), "users", len(users), "skus", len(skus))
+
+	// 与低库存门店库存一一对应的未读预警（与 database/init.sql 同源）。
+	now := time.Now()
+	alerts := []model.StockAlert{
+		{StoreID: stores[0].ID, SKUID: skus[1].ID, Quantity: 20, SafetyStock: 80, ShortageQty: 60, IsRead: false, TriggeredAt: now},
+		{StoreID: stores[1].ID, SKUID: skus[0].ID, Quantity: 30, SafetyStock: 40, ShortageQty: 10, IsRead: false, TriggeredAt: now},
+		{StoreID: stores[2].ID, SKUID: skus[4].ID, Quantity: 8, SafetyStock: 30, ShortageQty: 22, IsRead: false, TriggeredAt: now},
+	}
+	if err := db.Create(&alerts).Error; err != nil {
+		return fmt.Errorf("seed stock alerts: %w", err)
+	}
+	logger.Info("seed data created", "stores", len(stores), "users", len(users), "skus", len(skus), "alerts", len(alerts))
 	return nil
 }

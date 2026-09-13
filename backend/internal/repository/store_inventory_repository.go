@@ -20,6 +20,7 @@ type StoreInventoryRepository interface {
 	List(page, pageSize int, storeID, skuID uint) ([]model.StoreInventory, int64, error)
 	ListAlerts() ([]model.StoreInventory, error)
 	Update(inv *model.StoreInventory) error
+	UpdateTx(tx *gorm.DB, inv *model.StoreInventory) error
 	AdjustQuantity(storeID, skuID uint, delta int) error
 	AdjustQuantityTx(tx *gorm.DB, storeID, skuID uint, delta int) error
 }
@@ -104,7 +105,11 @@ func (r *storeInventoryRepository) ListAlerts() ([]model.StoreInventory, error) 
 }
 
 func (r *storeInventoryRepository) Update(inv *model.StoreInventory) error {
-	if err := r.db.Save(inv).Error; err != nil {
+	return r.UpdateTx(nil, inv)
+}
+
+func (r *storeInventoryRepository) UpdateTx(tx *gorm.DB, inv *model.StoreInventory) error {
+	if err := dbOrTx(r.db, tx).Save(inv).Error; err != nil {
 		return fmt.Errorf("update inventory: %w", err)
 	}
 	return nil

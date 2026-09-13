@@ -54,7 +54,14 @@ func (m *mockInventoryRepo) List(page, pageSize int, storeID, skuID uint) ([]mod
 	return nil, 0, nil
 }
 func (m *mockInventoryRepo) ListAlerts() ([]model.StoreInventory, error) { return nil, nil }
-func (m *mockInventoryRepo) Update(inv *model.StoreInventory) error      { return nil }
+func (m *mockInventoryRepo) Update(inv *model.StoreInventory) error    { return m.UpdateTx(nil, inv) }
+func (m *mockInventoryRepo) UpdateTx(tx *gorm.DB, inv *model.StoreInventory) error {
+	if cur, ok := m.items[keyOf(inv.StoreID, inv.SKUID)]; ok {
+		cur.SafetyStock = inv.SafetyStock
+		cur.Quantity = inv.Quantity
+	}
+	return nil
+}
 func (m *mockInventoryRepo) AdjustQuantity(storeID, skuID uint, delta int) error {
 	return m.AdjustQuantityTx(nil, storeID, skuID, delta)
 }
@@ -67,6 +74,18 @@ func (m *mockInventoryRepo) AdjustQuantityTx(tx *gorm.DB, storeID, skuID uint, d
 	m.items[keyOf(storeID, skuID)] = inv
 	return nil
 }
+
+// noopAlertService 不产生任何预警副作用，供库存服务单测使用。
+type noopAlertService struct{}
+
+func (noopAlertService) TriggerAfterChangeTx(tx *gorm.DB, storeID, skuID uint) error { return nil }
+func (noopAlertService) TriggerAfterChange(storeID, skuID uint) error               { return nil }
+func (noopAlertService) List(viewer *util.JWTClaims, page, pageSize int, view constants.AlertView) ([]model.StockAlert, int64, error) {
+	return nil, 0, nil
+}
+func (noopAlertService) UnreadCount(viewer *util.JWTClaims) (int64, error) { return 0, nil }
+func (noopAlertService) MarkRead(viewer *util.JWTClaims, id uint) error    { return nil }
+func (noopAlertService) MarkAllRead(viewer *util.JWTClaims) (int64, error) { return 0, nil }
 
 type mockSKURepo struct{}
 
@@ -85,7 +104,7 @@ func (m *mockSKURepo) Delete(id uint) error                       { return nil }
 func newTestInventoryService() (StoreInventoryService, *mockInventoryRepo) {
 	repo := newMockInventoryRepo()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewStoreInventoryService(repo, &mockSKURepo{}, nil, logger), repo
+	return NewStoreInventoryService(repo, &mockSKURepo{}, noopAlertService{}, nil, logger), repo
 }
 
 func TestStoreInventoryCheckSufficient(t *testing.T) {

@@ -90,6 +90,29 @@ CREATE TABLE IF NOT EXISTS stocktakes (
 );
 CREATE INDEX IF NOT EXISTS idx_stocktakes_store ON stocktakes(store_id);
 
+-- 库存预警通知：库存低于安全线时生成未读通知。
+CREATE TABLE IF NOT EXISTS stock_alerts (
+    id BIGSERIAL PRIMARY KEY,
+    store_id BIGINT NOT NULL,
+    sku_id BIGINT NOT NULL,
+    quantity INT NOT NULL DEFAULT 0,
+    safety_stock INT NOT NULL DEFAULT 0,
+    shortage_qty INT NOT NULL DEFAULT 0,
+    trigger_count INT NOT NULL DEFAULT 1,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    triggered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_stock_alerts_store ON stock_alerts(store_id);
+CREATE INDEX IF NOT EXISTS idx_stock_alerts_sku ON stock_alerts(sku_id);
+CREATE INDEX IF NOT EXISTS idx_stock_alerts_read ON stock_alerts(is_read);
+CREATE INDEX IF NOT EXISTS idx_stock_alerts_triggered ON stock_alerts(triggered_at);
+-- 同一门店 + SKU 只保留一条未读通知；已读历史可保留多条。
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_alert_store_sku_unread
+    ON stock_alerts (store_id, sku_id) WHERE is_read = false;
+
 -- ============ 种子数据 ============
 INSERT INTO stores (id, code, name, address) VALUES
     (1, 'ST001', '北京朝阳门店', '北京市朝阳区建国路 88 号'),
@@ -127,8 +150,16 @@ INSERT INTO stock_records (id, store_id, sku_id, record_type, quantity) VALUES
     (3, 1, 2, 'sale', 30)
 ON CONFLICT (id) DO NOTHING;
 
+-- 与低库存门店库存一一对应的未读预警（缺口 = 安全库存 - 当前库存）。
+INSERT INTO stock_alerts (id, store_id, sku_id, quantity, safety_stock, shortage_qty, trigger_count, is_read, triggered_at) VALUES
+    (1, 1, 2, 20, 80, 60, 1, FALSE, NOW()),
+    (2, 2, 1, 30, 40, 10, 1, FALSE, NOW()),
+    (3, 3, 5, 8, 30, 22, 1, FALSE, NOW())
+ON CONFLICT (id) DO NOTHING;
+
 SELECT setval('users_id_seq', GREATEST((SELECT MAX(id) FROM users), 1));
 SELECT setval('stores_id_seq', GREATEST((SELECT MAX(id) FROM stores), 1));
 SELECT setval('skus_id_seq', GREATEST((SELECT MAX(id) FROM skus), 1));
 SELECT setval('store_inventories_id_seq', GREATEST((SELECT MAX(id) FROM store_inventories), 1));
 SELECT setval('stock_records_id_seq', GREATEST((SELECT MAX(id) FROM stock_records), 1));
+SELECT setval('stock_alerts_id_seq', GREATEST((SELECT MAX(id) FROM stock_alerts), 1));

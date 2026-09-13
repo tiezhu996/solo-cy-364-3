@@ -26,4 +26,6 @@ const (
 	MsgStocktakeSuccess       = "盘点完成，盘盈盘亏已计算"
 	MsgSafetyStockUpdated     = "安全库存已更新"
 	MsgInventoryLowWarning    = "存在低库存预警"
+	MsgStockAlertRead         = "预警通知已标记为已读"
+	MsgStockAlertAllRead      = "全部预警通知已标记为已读"
 )
